@@ -1,16 +1,5 @@
 #include <Arduino.h>
-/*
 
- _                      _       _   _
-| |                    (_)     | | | |
-| |      ___ __      __ _  ___ | |_| |  ___
-| |     / _ \\ \ /\ / /| |/ __||  _  | / _ \
-| |____|  __/ \ V  V / | |\__ \| | | ||  __/
-\_____/ \___|  \_/\_/  |_||___/\_| |_/ \___|
-
-Compatible with all TTGO camera products, written by LewisHe
-03/28/2020
-*/
 
 #include <WiFi.h>
 #include <Wire.h>
@@ -18,15 +7,9 @@ Compatible with all TTGO camera products, written by LewisHe
 /***************************************
  *  Board select
  **************************************/
-/* Select your board here, see the board list in the README for details*/
-// #define T_Camera_JORNAL_VERSION
-// #define T_Camera_MINI_VERSION
+
     #define T_Camera_PLUS_VERSION
-// #define T_Camera_V05_VERSION
-// #define T_Camera_V16_VERSION
-// #define T_Camera_V162_VERSION
-// #define T_Camera_V17_VERSION
-// #define ESPRESSIF_ESP_EYE
+
 
 #include "select_pins.h"
 
@@ -50,6 +33,16 @@ Compatible with all TTGO camera products, written by LewisHe
 #define WIFI_SSID   "MrFlexi"
 #define WIFI_PASSWD "Linde-123"
 
+WiFiClient client;
+
+
+/***************************************
+ *  Netcup Server
+ **************************************/
+String serverName = "api.szaroletta.de";   // REPLACE WITH YOUR Raspberry Pi IP ADDRESS
+String serverPath = "/upload";     // The default serverPath should be upload.php
+const int serverPort = 5000;
+
 
 #if defined(SOFTAP_MODE)
 #endif
@@ -57,12 +50,6 @@ String macAddress = "";
 String ipAddress = "";
 
 extern void startCameraServer();
-
-#if defined(BUTTON_1)
-//Depend BME280 library ,See https://github.com/mathertel/OneButton
-#include <OneButton.h>
-OneButton button(BUTTON_1, true);
-#endif
 
 
 #if defined(ENABLE_BEM280)
@@ -72,20 +59,89 @@ BME280 sensor;
 String temp, pressure, altitude, humidity;
 #endif
 
-#if defined(SSD130_MODLE_TYPE)
-// Depend OLED library ,See  https://github.com/ThingPulse/esp8266-oled-ssd1306
-#include "SSD1306.h"
-#include "OLEDDisplayUi.h"
-#define SSD1306_ADDRESS 0x3c
-SSD1306 oled(SSD1306_ADDRESS, I2C_SDA, I2C_SCL, (OLEDDISPLAY_GEOMETRY)SSD130_MODLE_TYPE);
-OLEDDisplayUi ui(&oled);
-#endif
 
 #if defined(ENABLE_TFT)
 // Depend TFT_eSPI library ,See  https://github.com/Bodmer/TFT_eSPI
 #include <TFT_eSPI.h>
 TFT_eSPI tft = TFT_eSPI();
 #endif
+
+
+String sendPhoto() {
+  String getAll;
+  String getBody;
+
+  camera_fb_t * fb = NULL;
+  fb = esp_camera_fb_get();
+  if(!fb) {
+    Serial.println("Camera capture failed");
+    delay(1000);
+    ESP.restart();
+  }
+  
+  Serial.println("Connecting to server: " + serverName);
+
+  if (client.connect(serverName.c_str(), serverPort)) {
+    Serial.println("Connection successful!");    
+    String head = "--RandomNerdTutorials\r\nContent-Disposition: form-data; name=\"imageFile\"; filename=\"esp32-cam.jpg\"\r\nContent-Type: image/jpeg\r\n\r\n";
+    String tail = "\r\n--RandomNerdTutorials--\r\n";
+
+    uint16_t imageLen = fb->len;
+    uint16_t extraLen = head.length() + tail.length();
+    uint16_t totalLen = imageLen + extraLen;
+  
+    client.println("POST " + serverPath + " HTTP/1.1");
+    client.println("Host: " + serverName);
+    client.println("Content-Length: " + String(totalLen));
+    client.println("Content-Type: multipart/form-data; boundary=RandomNerdTutorials");
+    client.println();
+    client.print(head);
+  
+    uint8_t *fbBuf = fb->buf;
+    size_t fbLen = fb->len;
+    for (size_t n=0; n<fbLen; n=n+1024) {
+      if (n+1024 < fbLen) {
+        client.write(fbBuf, 1024);
+        fbBuf += 1024;
+      }
+      else if (fbLen%1024>0) {
+        size_t remainder = fbLen%1024;
+        client.write(fbBuf, remainder);
+      }
+    }   
+    client.print(tail);
+    
+    esp_camera_fb_return(fb);
+    
+    int timoutTimer = 10000;
+    long startTimer = millis();
+    boolean state = false;
+    
+    while ((startTimer + timoutTimer) > millis()) {
+      Serial.print(".");
+      delay(100);      
+      while (client.available()) {
+        char c = client.read();
+        if (c == '\n') {
+          if (getAll.length()==0) { state=true; }
+          getAll = "";
+        }
+        else if (c != '\r') { getAll += String(c); }
+        if (state==true) { getBody += String(c); }
+        startTimer = millis();
+      }
+      if (getBody.length()>0) { break; }
+    }
+    Serial.println();
+    client.stop();
+    Serial.println(getBody);
+  }
+  else {
+    getBody = "Connection to " + serverName +  " failed.";
+    Serial.println(getBody);
+  }
+  return getBody;
+}
 
 bool setupSensor()
 {
@@ -174,74 +230,6 @@ bool setupDisplay()
     digitalWrite(TFT_BL_PIN, HIGH);
 #endif
 
-#elif defined(SSD130_MODLE_TYPE)
-    static FrameCallback frames[] = {
-        [](OLEDDisplay * display, OLEDDisplayUiState * state, int16_t x, int16_t y)
-        {
-            display->setTextAlignment(TEXT_ALIGN_CENTER);
-            display->setFont(ArialMT_Plain_10);
-#if (SSD130_MODLE_TYPE)
-            display->drawString(64 + x, 0 + y, macAddress);
-            display->drawString(64 + x, 10 + y, ipAddress);
-#else
-            display->drawString(64 + x, 9 + y, macAddress);
-            display->drawString(64 + x, 25 + y, ipAddress);
-#endif
-
-#if defined(AS312_PIN)
-            if (digitalRead(AS312_PIN)) {
-                display->drawString(64 + x, 40 + y, "AS312 Trigger");
-            }
-#endif
-
-
-        },
-        [](OLEDDisplay * display, OLEDDisplayUiState * state, int16_t x, int16_t y)
-        {
-#if defined(ENABLE_BME280)
-            display->setFont(ArialMT_Plain_16);
-            display->setTextAlignment(TEXT_ALIGN_LEFT);
-            display->drawString(0 + x, 0 + y, temp);
-            display->drawString(0 + x, 16 + y, pressure);
-            display->drawString(0 + x, 32 + y, altitude);
-            display->drawString(0 + x, 48 + y, humidity);
-#else
-            display->setTextAlignment(TEXT_ALIGN_CENTER);
-            display->setFont(ArialMT_Plain_10);
-
-
-#if (SSD130_MODLE_TYPE)
-            // if (oled.getHeight() == 32) {
-            display->drawString( 64 + x, 0 + y, "Camera Ready! Use");
-            display->drawString(64 + x, 10 + y, "http://" + ipAddress );
-            display->drawString(64 + x, 16 + y, "to connect");
-            // } else {
-#else
-            display->drawString( 64 + x, 5 + y, "Camera Ready! Use");
-            display->drawString(64 + x, 25 + y, "http://" + ipAddress );
-            display->drawString(64 + x, 45 + y, "to connect");
-            // }
-#endif  /*SSD130_MODLE_TYPE*/
-
-#endif  /*ENABLE_BME280*/
-        }
-    };
-
-    if (!deviceProbe(SSD1306_ADDRESS))return false;
-    oled.init();
-    // Wire.setClock(100000);  //! Reduce the speed and prevent the speed from being too high, causing the screen
-    oled.setFont(ArialMT_Plain_16);
-    oled.setTextAlignment(TEXT_ALIGN_CENTER);
-    // delay(50);
-    oled.drawString( oled.getWidth() / 2, oled.getHeight() / 2 - 10, "LilyGo CAM");
-    oled.display();
-    ui.setTargetFPS(30);
-    ui.setIndicatorPosition(BOTTOM);
-    ui.setIndicatorDirection(LEFT_RIGHT);
-    ui.setFrameAnimation(SLIDE_LEFT);
-    ui.setFrames(frames, sizeof(frames) / sizeof(frames[0]));
-    ui.setTimePerFrame(6000);
-    ui.disableIndicator();
 #endif
     return true;
 }
@@ -282,38 +270,8 @@ bool setupPower()
         Wire.write(0x35); // 0x37 is default reg value
     return Wire.endTransmission() == 0;
 
-#elif defined(ENABLE_AXP192)
-#define AXP192_ADDRESS  0x34
-    if (!deviceProbe(AXP192_ADDRESS))return false;
-    //Turn off no use power channel , Or you can do nothing
-    uint8_t val;
-    Wire.beginTransmission(AXP192_ADDRESS);
-    Wire.write(0x30);
-    Wire.endTransmission();
-    Wire.requestFrom(AXP192_ADDRESS, 1);
-    val = Wire.read();
-
-    Wire.beginTransmission(AXP192_ADDRESS);
-    Wire.write(0x30);
-    Wire.write( val & 0xFC);
-    Wire.endTransmission();
-
-    Wire.beginTransmission(AXP192_ADDRESS);
-    Wire.write(0x12);
-    Wire.endTransmission();
-    Wire.requestFrom(AXP192_ADDRESS, 1);
-    val =  Wire.read();
-
-    Wire.beginTransmission(AXP192_ADDRESS);
-    Wire.write(0x12);
-    Wire.write(val & 0b10100010);
-    Wire.endTransmission();
 #endif
-#if defined(T_Camera_MINI_VERSION)
-    //  There is a pin in the Mini to control the camera power
-    pinMode(POWER_CONTROL_PIN, OUTPUT);
-    digitalWrite(POWER_CONTROL_PIN, HIGH);
-#endif
+
 
     return true;
 }
@@ -378,22 +336,14 @@ bool setupCamera()
     config.pixel_format = PIXFORMAT_JPEG;
     //init with high specs to pre-allocate larger buffers
     if (psramFound()) {
-        config.frame_size = FRAMESIZE_UXGA;
+        config.frame_size = FRAMESIZE_VGA;
         config.jpeg_quality = 10;
         config.fb_count = 2;
     } else {
-        config.frame_size = FRAMESIZE_SVGA;
+        config.frame_size = FRAMESIZE_VGA;
         config.jpeg_quality = 12;
         config.fb_count = 1;
     }
-#endif
-
-#if defined(ESPRESSIF_ESP_EYE) || defined(T_Camera_V162_VERSION) || defined(T_Camera_MINI_VERSION)
-    /* IO13, IO14 is designed for JTAG by default,
-     * to use it as generalized input,
-     * firstly declair it as pullup input */
-    pinMode(13, INPUT_PULLUP);
-    pinMode(14, INPUT_PULLUP);
 #endif
 
     // camera init
@@ -413,22 +363,12 @@ bool setupCamera()
     //drop down frame size for higher initial frame rate
     s->set_framesize(s, FRAMESIZE_QVGA);
 
-#if  defined(T_Camera_V162_VERSION)
-    s->set_vflip(s, 1);
-    s->set_hmirror(s, 1);
-#endif
     return true;
 }
 
 void setupNetwork()
 {
     macAddress = "LilyGo-CAM-";
-#ifdef SOFTAP_MODE
-    WiFi.mode(WIFI_AP);
-    macAddress += WiFi.softAPmacAddress().substring(0, 5);
-    WiFi.softAP(macAddress.c_str());
-    ipAddress = WiFi.softAPIP().toString();
-#else
     WiFi.begin(WIFI_SSID, WIFI_PASSWD);
     while (WiFi.status() != WL_CONNECTED) {
         delay(500);
@@ -438,13 +378,11 @@ void setupNetwork()
     Serial.println("WiFi connected");
     ipAddress = WiFi.localIP().toString();
     macAddress += WiFi.macAddress().substring(0, 5);
-#endif
-#if defined(ENABLE_TFT)
-#if defined(T_Camera_PLUS_VERSION)
+
+
     tft.drawString("ipAddress:", tft.width() / 2, tft.height() / 2 + 50);
     tft.drawString(ipAddress, tft.width() / 2, tft.height() / 2 + 72);
-#endif
-#endif
+
 }
 
 void setupButton()
@@ -554,6 +492,7 @@ void setup()
     Serial.print("Camera Ready! Use 'http://");
     Serial.print(ipAddress);
     Serial.println("' to connect");
+    sendPhoto();
 }
 
 void loop()
