@@ -16,7 +16,6 @@
 /***************************************
  *  Function
  **************************************/
-// #define SOFTAP_MODE       //The comment will be connected to the specified ssid
 
 //When there is BME280, set the reading time here
 #define ENABLE_BEM280 1
@@ -43,9 +42,6 @@ String serverName = "api.szaroletta.de";   // REPLACE WITH YOUR Raspberry Pi IP 
 String serverPath = "/upload";     // The default serverPath should be upload.php
 const int serverPort = 5000;
 
-
-#if defined(SOFTAP_MODE)
-#endif
 String macAddress = "";
 String ipAddress = "";
 
@@ -71,6 +67,7 @@ String sendPhoto() {
   String getAll;
   String getBody;
 
+  Serial.println("Smile.....");
   camera_fb_t * fb = NULL;
   fb = esp_camera_fb_get();
   if(!fb) {
@@ -83,8 +80,8 @@ String sendPhoto() {
 
   if (client.connect(serverName.c_str(), serverPort)) {
     Serial.println("Connection successful!");    
-    String head = "--RandomNerdTutorials\r\nContent-Disposition: form-data; name=\"imageFile\"; filename=\"esp32-cam.jpg\"\r\nContent-Type: image/jpeg\r\n\r\n";
-    String tail = "\r\n--RandomNerdTutorials--\r\n";
+    String head = "--MrFlexi\r\nContent-Disposition: form-data; name=\"imageFile\"; filename=\"esp32-cam.jpg\"\r\nContent-Type: image/jpeg\r\n\r\n";
+    String tail = "\r\n--MrFlexi--\r\n";
 
     uint16_t imageLen = fb->len;
     uint16_t extraLen = head.length() + tail.length();
@@ -93,7 +90,7 @@ String sendPhoto() {
     client.println("POST " + serverPath + " HTTP/1.1");
     client.println("Host: " + serverName);
     client.println("Content-Length: " + String(totalLen));
-    client.println("Content-Type: multipart/form-data; boundary=RandomNerdTutorials");
+    client.println("Content-Type: multipart/form-data; boundary=MrFlexi");
     client.println();
     client.print(head);
   
@@ -157,10 +154,6 @@ bool setupSensor()
     sensor.setHumidityOverSample(1); //0 to 16 are valid. 0 disables humidity sensing. See table 19.
 
     sensor.setMode(MODE_SLEEP); //MODE_SLEEP, MODE_FORCED, MODE_NORMAL is valid. See 3.3
-#endif
-
-#if defined(AS312_PIN)
-    pinMode(AS312_PIN, INPUT);
 #endif
     return true;
 }
@@ -336,10 +329,12 @@ bool setupCamera()
     config.pixel_format = PIXFORMAT_JPEG;
     //init with high specs to pre-allocate larger buffers
     if (psramFound()) {
-        config.frame_size = FRAMESIZE_VGA;
+        Serial.printf("psram found");
+        config.frame_size = FRAMESIZE_SXGA;
         config.jpeg_quality = 10;
         config.fb_count = 2;
     } else {
+        Serial.printf("NO psram found");
         config.frame_size = FRAMESIZE_VGA;
         config.jpeg_quality = 12;
         config.fb_count = 1;
@@ -361,7 +356,7 @@ bool setupCamera()
         s->set_saturation(s, -2);//lower the saturation
     }
     //drop down frame size for higher initial frame rate
-    s->set_framesize(s, FRAMESIZE_QVGA);
+    //s->set_framesize(s, FRAMESIZE_QVGA);
 
     return true;
 }
@@ -370,6 +365,7 @@ void setupNetwork()
 {
     macAddress = "LilyGo-CAM-";
     WiFi.begin(WIFI_SSID, WIFI_PASSWD);
+    Serial.print("Wifi connecting...");
     while (WiFi.status() != WL_CONNECTED) {
         delay(500);
         Serial.print(".");
@@ -387,70 +383,7 @@ void setupNetwork()
 
 void setupButton()
 {
-#if defined(BUTTON_1)
-    button.attachClick([]() {
-        static bool en = false;
-        sensor_t *s = esp_camera_sensor_get();
-        en = en ? 0 : 1;
-        s->set_vflip(s, en);
-#if defined(SSD130_MODLE_TYPE)
-        if (en) {
-            oled.resetOrientation();
-        } else {
-            oled.flipScreenVertically();
-        }
-#endif
-        // delay(200);
-    });
 
-    button.attachDoubleClick([]() {
-        if (PWDN_GPIO_NUM > 0) {
-            pinMode(PWDN_GPIO_NUM, PULLUP);
-            digitalWrite(PWDN_GPIO_NUM, HIGH);
-        }
-
-#if defined(SSD130_MODLE_TYPE)
-        ui.disableAutoTransition();
-        oled.setTextAlignment(TEXT_ALIGN_CENTER);
-        oled.setFont(ArialMT_Plain_10);
-        oled.clear();
-#if defined(AS312_PIN) && defined(PIR_SUPPORT_WAKEUP)
-        oled.drawString(oled.getWidth() / 2, oled.getHeight() / 2, "Set to wake up from PIR");
-#elif defined(BUTTON_1)
-        oled.drawString(oled.getWidth() / 2 - 5, oled.getHeight() / 2 - 20, "Deepsleep");
-        oled.drawString(oled.getWidth() / 2, oled.getHeight() / 2 - 10, "Set to be awakened by");
-        oled.drawString(oled.getWidth() / 2, oled.getHeight() / 2, "a key press");
-#else
-        oled.drawString(oled.getWidth() / 2, oled.getHeight() / 2, "Set to wake up by timer");
-#endif
-        oled.display();
-        delay(3000);
-        oled.clear();
-        oled.displayOff();
-#else
-        delay(2000);
-#endif  /*SSD130_MODLE_TYPE*/
-
-
-#if defined(AS312_PIN) && defined(PIR_SUPPORT_WAKEUP)
-        esp_sleep_enable_ext1_wakeup(((uint64_t)(((uint64_t)1) << AS312_PIN)), ESP_EXT1_WAKEUP_ANY_HIGH);
-#elif defined(BUTTON_1)
-        // esp_sleep_enable_ext0_wakeup((gpio_num_t )BUTTON_1, LOW);
-#if defined(T_Camera_MINI_VERSION)
-        esp_sleep_enable_ext1_wakeup(((uint64_t)(((uint64_t)1) << BUTTON_1)), ESP_EXT1_WAKEUP_ANY_HIGH);
-#else
-        esp_sleep_enable_ext1_wakeup(((uint64_t)(((uint64_t)1) << BUTTON_1)), ESP_EXT1_WAKEUP_ALL_LOW);
-#endif
-#else
-        esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * uS_TO_S_FACTOR);
-#endif
-        esp_deep_sleep_start();
-    });
-#if defined(T_Camera_MINI_VERSION)
-    button.setClickTicks(200);
-    button.setDebounceTicks(0);
-#endif
-#endif /*BUTTON_1*/
 }
 
 
