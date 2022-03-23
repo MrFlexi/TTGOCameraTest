@@ -5,12 +5,22 @@
 #include "SPIFFS.h"
 #include "esp_system.h"
 #include "esp_spi_flash.h"
+#include <TJpg_Decoder.h>
+#include <HTTPClient.h>
+#include <ArduinoJson.h>
 /***************************************
  *  Board select
+ *  goto Pio libs include 
+ *  file user_setup_select.h   
+ *          comment #include <User_Setup.h>  
+ *          uncomment #include <User_Setups/Setup44_TTGO_CameraPlus.h> 
  **************************************/
 
 #define T_Camera_PLUS_VERSION
 #include "select_pins.h"
+
+#define GFXFF 1
+#define FSB9 &FreeSerifBold9pt7b
 
 /***************************************
  *  Function
@@ -74,9 +84,29 @@ void setup_filesystem()
 
     freeKBytes = (totalBytes - usedBytes) / 1024;
     Serial.println("SPIFF File sistem info.");
-    Serial.print("Total space: ");Serial.print(totalBytes / 1024);Serial.println(" KBytes");
-    Serial.print("Free space: ");Serial.print(freeKBytes);Serial.println(" kBytes");
+    Serial.print("Total space: ");
+    Serial.print(totalBytes / 1024);
+    Serial.println(" KBytes");
+    Serial.print("Free space: ");
+    Serial.print(freeKBytes);
+    Serial.println(" kBytes");
     Serial.println();
+}
+
+bool tft_output(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t *bitmap)
+{
+    // Stop further decoding as image is running off bottom of screen
+    if (y >= tft.height())
+        return 0;
+
+    // This function will clip the image block rendering automatically at the TFT boundaries
+    tft.pushImage(x, y, w, h, bitmap);
+
+    // This might work instead if you adapt the sketch to use the Adafruit_GFX library
+    // tft.drawRGBBitmap(x, y, bitmap, w, h);
+
+    // Return 1 to decode next block
+    return 1;
 }
 
 String sendPhoto()
@@ -84,21 +114,16 @@ String sendPhoto()
     String getAll;
     String getBody;
 
-    Serial.println("Smile.....");
     camera_fb_t *fb = NULL;
     fb = esp_camera_fb_get();
     if (!fb)
     {
         Serial.println("Camera capture failed");
-        delay(1000);
-        ESP.restart();
     }
-
-    Serial.println("Connecting to server: " + serverName);
 
     if (client.connect(serverName.c_str(), serverPort))
     {
-        Serial.println("Connection successful!");
+        //Serial.println("Connection successful!");
         String head = "--MrFlexi\r\nContent-Disposition: form-data; name=\"image\"; filename=\"image.jpg\"\r\nContent-Type: image/jpeg\r\n\r\n";
         String tail = "\r\n--MrFlexi--\r\n";
 
@@ -129,7 +154,7 @@ String sendPhoto()
                 client.write(fbBuf, remainder);
             }
         }
-        Serial.println("Tail");
+        //Serial.println("Tail");
         client.print(tail);
 
         esp_camera_fb_return(fb);
@@ -169,9 +194,7 @@ String sendPhoto()
                 break;
             }
         }
-        Serial.println();
         client.stop();
-        Serial.println("Client Stop");
         Serial.println(getBody);
     }
     else
@@ -191,7 +214,7 @@ bool deviceProbe(uint8_t addr)
 bool setupDisplay()
 {
     tft.init();
-    tft.setRotation(0);
+    tft.setRotation(180);
     tft.fillScreen(TFT_BLACK);
     tft.setTextSize(2);
     tft.setTextDatum(MC_DATUM);
@@ -203,17 +226,6 @@ bool setupDisplay()
     return true;
 }
 
-void loopDisplay()
-{
-
-#if defined(BUTTON_1)
-    button.tick();
-#endif /*BUTTON_1*/
-
-#if defined(ENABLE_TFT)
-
-#endif
-}
 
 bool setupPower()
 {
@@ -230,15 +242,68 @@ bool setupPower()
     else
         Wire.write(0x35); // 0x37 is default reg value
     return Wire.endTransmission() == 0;
-
 #endif
-
-    return true;
+return true;
 }
 
 #if defined(SDCARD_CS_PIN)
 #include <SD.h>
 #endif
+
+//  Camera functions
+camera_fb_t *capture()
+{
+    camera_fb_t *fb = NULL;
+    esp_err_t res = ESP_OK;
+    fb = esp_camera_fb_get();
+    return fb;
+}
+
+void parsingResult(String response)
+{
+    Serial.println();
+    Serial.println(response);
+    DynamicJsonDocument doc(1024);
+    deserializeJson(doc, response);
+    JsonArray array = doc.as<JsonArray>();
+    int yPos = 4;
+    for (JsonVariant v : array)
+    {
+        JsonObject object = v.as<JsonObject>();
+        const char *description = object["description"];
+        float score = object["score"];
+        String label = "";
+        label += description;
+        label += ":";
+        label += score;
+
+        tft.drawString(label, 8, yPos);
+        yPos += 16;
+    }
+}
+
+void postImage(camera_fb_t *fb)
+{
+    HTTPClient client;
+    client.begin("http://api.szaroletta.de:5000/add");
+    client.addHeader("Content-Type", "image/jpeg");
+    int httpResponseCode = client.POST(fb->buf, fb->len);
+    if (httpResponseCode == 200)
+    {
+        String response = client.getString();
+        parsingResult(response);
+    }
+    else
+    {
+        //Error
+        tft.drawString("Check Your Server!!!", 8, 4);
+        Serial.println("HTTP Post Image error");
+        Serial.println(client.getString());
+    }
+
+    client.end();
+}
+
 bool setupSDCard()
 {
     /*
@@ -295,19 +360,22 @@ bool setupCamera()
     config.pin_pwdn = PWDN_GPIO_NUM;
     config.pin_reset = RESET_GPIO_NUM;
     config.xclk_freq_hz = 20000000;
+    //config.pixel_format = PIXFORMAT_RGB565;
     config.pixel_format = PIXFORMAT_JPEG;
     // init with high specs to pre-allocate larger buffers
     if (psramFound())
     {
-        Serial.printf("psram found");
-        config.frame_size = FRAMESIZE_SXGA;
+        Serial.println("Psram found");
+        //config.frame_size = FRAMESIZE_VGA;
+        config.frame_size = FRAMESIZE_240X240;
         config.jpeg_quality = 10;
         config.fb_count = 2;
     }
     else
     {
-        Serial.printf("NO psram found");
-        config.frame_size = FRAMESIZE_VGA;
+        Serial.println("NO psram found");
+        //config.frame_size = FRAMESIZE_VGA;
+        config.frame_size = FRAMESIZE_240X240;
         config.jpeg_quality = 12;
         config.fb_count = 1;
     }
@@ -322,9 +390,13 @@ bool setupCamera()
     }
 
     sensor_t *s = esp_camera_sensor_get();
+    
+
+    s->set_hmirror(s,1);
     // initial sensors are flipped vertically and colors are a bit saturated
     if (s->id.PID == OV3660_PID)
     {
+        Serial.println("Camera Sensor PID OV3660");
         s->set_vflip(s, 1);       // flip it back
         s->set_brightness(s, 1);  // up the blightness just a bit
         s->set_saturation(s, -2); // lower the saturation
@@ -333,6 +405,24 @@ bool setupCamera()
     // s->set_framesize(s, FRAMESIZE_QVGA);
 
     return true;
+}
+
+// https://github.com/0015/ThatProject/blob/master/ESP32CAM_Projects/ESP32_CAM_AICamera_Labelling/ESP32_CAM_ARDUINO/ESP32_CAM_ARDUINO.ino
+
+void showImage()
+{
+    camera_fb_t *fb = capture();
+    if (!fb || fb->format != PIXFORMAT_JPEG)
+    {
+        Serial.println("Camera capture failed");
+        esp_camera_fb_return(fb);
+        return;
+    }
+    else
+    {
+        TJpgDec.drawJpg(0, 0, (const uint8_t *)fb->buf, fb->len);
+        esp_camera_fb_return(fb);
+    }
 }
 
 void setupNetwork()
@@ -354,6 +444,35 @@ void setupNetwork()
     tft.drawString(ipAddress, tft.width() / 2, tft.height() / 2 + 72);
 }
 
+void sendImage()
+{
+    camera_fb_t *fb = capture();
+    if (!fb || fb->format != PIXFORMAT_JPEG)
+    {
+        Serial.println("Camera capture failed");
+        esp_camera_fb_return(fb);
+        return;
+    }
+    else
+    {
+        TJpgDec.drawJpg(0, 0, (const uint8_t *)fb->buf, fb->len);
+
+        tft.drawString("Wifi Connecting!", 8, 4, GFXFF);
+
+        if (WiFi.status() == WL_CONNECTED)
+        {
+            //tft.drawString("Wifi Connected!", 8, 4, GFXFF);
+            TJpgDec.drawJpg(0, 0, (const uint8_t *)fb->buf, fb->len);
+            postImage(fb);
+        }
+        else
+        {
+            tft.drawString("Check Wifi credential!", 8, 4);
+        }
+        esp_camera_fb_return(fb);
+    }
+}
+
 void setupButton()
 {
 }
@@ -361,49 +480,34 @@ void setupButton()
 void setup()
 {
 
-    Serial.begin(115200);
-
 #if defined(I2C_SDA) && defined(I2C_SCL)
     Wire.begin(I2C_SDA, I2C_SCL);
 #endif
 
-    setup_filesystem();
+    TJpgDec.setJpgScale(1);
+    TJpgDec.setSwapBytes(true);
+    TJpgDec.setCallback(tft_output);
 
-    bool status;
-    status = setupDisplay();
-    Serial.print("setupDisplay status ");
-    Serial.println(status);
-
-    status = setupSDCard();
-    Serial.print("setupSDCard status ");
-    Serial.println(status);
-
-    status = setupPower();
-    Serial.print("setupPower status ");
-    Serial.println(status);
-
-    status = setupCamera();
-    Serial.print("setupCamera status ");
-    Serial.println(status);
-    if (!status)
-    {
-        delay(10000);
-        esp_restart();
-    }
-
-    setupButton();
+    Serial.begin(115200);
 
     setupNetwork();
-
-    startCameraServer();
-
-    Serial.print("Camera Ready! Use 'http://");
-    Serial.print(ipAddress);
-    Serial.println("' to connect");
-    sendPhoto();
+    setup_filesystem();
+    setupDisplay();
+    setupSDCard();
+    setupPower();
+    setupCamera();
+    
+    //startCameraServer();
+    //Serial.print("Camera Ready! Use 'http://");
+    //Serial.print(ipAddress);
+    //Serial.println("' to connect");
+    // sendPhoto();
 }
 
 void loop()
 {
-    loopDisplay();
+    showImage();
+    sendPhoto();
+    //sendImage();
+    delay(5000);
 }
